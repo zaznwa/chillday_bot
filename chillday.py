@@ -5,6 +5,9 @@ from telegram.ext import (
 )
 import sqlite3
 
+# === 🔐 Список разрешённых Telegram ID ===
+ALLOWED_USERS = [638986363]  # ← сюда добавляй ID других, если нужно
+
 # === Состояния ===
 CHOOSING, ADD_NAME, ADD_PHONE, ORDER_PHONE = range(4)
 
@@ -26,13 +29,27 @@ cursor.execute('''
 ''')
 conn.commit()
 
+# === Проверка доступа ===
+def is_allowed(update: Update) -> bool:
+    return update.effective_user.id in ALLOWED_USERS
+
 # === Обработчики ===
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот CHILLDAY 🧋", reply_markup=main_keyboard)
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    await update.message.reply_text(
+        f"Привет, {username or 'гость'}!\n"
+        f"Твой Telegram ID: {user_id}",
+        reply_markup=main_keyboard
+    )
     return CHOOSING
 
 async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        await update.message.reply_text("❌ У тебя нет доступа к этой функции.")
+        return CHOOSING
+
     text = update.message.text
 
     if text == "🧍‍♂️ Добавить клиента":
@@ -65,6 +82,10 @@ async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADD_PHONE
 
 async def add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        await update.message.reply_text("❌ Нет доступа.")
+        return CHOOSING
+
     name = context.user_data["name"]
     phone = update.message.text
 
@@ -74,6 +95,10 @@ async def add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSING
 
 async def order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        await update.message.reply_text("❌ Нет доступа.")
+        return CHOOSING
+
     phone = update.message.text
     cursor.execute("SELECT name, drinks FROM clients WHERE phone = ?", (phone,))
     result = cursor.fetchone()
@@ -95,8 +120,17 @@ async def order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSING
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Отменено. Возвращаюсь в главное меню ⬇️", reply_markup=main_keyboard)
+    await update.message.reply_text("❌ Отменено. Возвращаюсь в главное меню.", reply_markup=main_keyboard)
     return CHOOSING
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        await update.message.reply_text("❌ Нет доступа.")
+        return
+
+    cursor.execute("DELETE FROM clients")
+    conn.commit()
+    await update.message.reply_text("🗑️ Все клиенты удалены! Список очищен.")
 
 # === Запуск ===
 
@@ -114,12 +148,7 @@ conv_handler = ConversationHandler(
 )
 
 app.add_handler(conv_handler)
-
-print("🚀 Бот с кнопками запущен!")
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("DELETE FROM clients")
-    conn.commit()
-    await update.message.reply_text("🗑️ Все клиенты удалены! Список пуст.")
 app.add_handler(CommandHandler("reset", reset))
 
+print("🚀 Бот запущен! Ждёт клиентов...")
 app.run_polling()
