@@ -5,15 +5,20 @@ from telegram.ext import (
 )
 import sqlite3
 
-# === 🔐 Список разрешённых Telegram ID ===
-ALLOWED_USERS = [638986363]  # ← сюда добавляй ID других, если нужно
+# === 🔐 Пароль доступа ===
+ACCESS_PASSWORD = "638986363"  # ← поменяй на свой
 
 # === Состояния ===
-CHOOSING, ADD_NAME, ADD_PHONE, ORDER_PHONE = range(4)
+AWAITING_PASSWORD, CHOOSING, ADD_NAME, ADD_PHONE, ORDER_PHONE, DELETE_PHONE = range(6)
 
-# === Клавиатура ===
+# === Клавиатуры ===
 main_keyboard = ReplyKeyboardMarkup(
-    [["🧍‍♂️ Добавить клиента", "🧋 Выдать напиток"], ["📋 Список клиентов"]],
+    [["🧍‍♂️ Добавить клиента", "🧋 Выдать напиток"],
+     ["📋 Список клиентов", "🗑️ Удалить клиента"]],
+    resize_keyboard=True
+)
+back_keyboard = ReplyKeyboardMarkup(
+    [["⬅️ Назад"]],
     resize_keyboard=True
 )
 
@@ -29,35 +34,42 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# === Проверка доступа ===
-def is_allowed(update: Update) -> bool:
-    return update.effective_user.id in ALLOWED_USERS
+# === Авторизация по паролю ===
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data = context.user_data
+
+    if user_data.get("is_authenticated"):
+        await update.message.reply_text("✅ Ты уже вошёл. Добро пожаловать снова!", reply_markup=main_keyboard)
+        return CHOOSING
+
+    await update.message.reply_text("🔐 Введи пароль для доступа:")
+    return AWAITING_PASSWORD
+
+async def check_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == ACCESS_PASSWORD:
+        context.user_data["is_authenticated"] = True
+        await update.message.reply_text("✅ Доступ разрешён! Добро пожаловать!", reply_markup=main_keyboard)
+        return CHOOSING
+    else:
+        await update.message.reply_text("❌ Неверный пароль. Попробуй ещё раз:")
+        return AWAITING_PASSWORD
 
 # === Обработчики ===
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-    await update.message.reply_text(
-        f"Привет, {username or 'гость'}!\n"
-        f"Твой Telegram ID: {user_id}",
-        reply_markup=main_keyboard
-    )
-    return CHOOSING
-
 async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("❌ У тебя нет доступа к этой функции.")
+    if not context.user_data.get("is_authenticated"):
+        await update.message.reply_text("❌ Сначала введи пароль. Напиши /start")
         return CHOOSING
 
     text = update.message.text
 
     if text == "🧍‍♂️ Добавить клиента":
-        await update.message.reply_text("Введи имя клиента:")
+        await update.message.reply_text("Введи имя клиента:", reply_markup=back_keyboard)
         return ADD_NAME
 
     elif text == "🧋 Выдать напиток":
-        await update.message.reply_text("Введи номер клиента:")
+        await update.message.reply_text("Введи номер клиента:", reply_markup=back_keyboard)
         return ORDER_PHONE
 
     elif text == "📋 Список клиентов":
@@ -72,18 +84,26 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg)
         return CHOOSING
 
+    elif text == "🗑️ Удалить клиента":
+        await update.message.reply_text("Введи номер клиента, которого нужно удалить:", reply_markup=back_keyboard)
+        return DELETE_PHONE
+
     else:
         await update.message.reply_text("Выбери кнопку ⬇️", reply_markup=main_keyboard)
         return CHOOSING
 
 async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "⬅️ Назад":
+        await update.message.reply_text("↩️ Возвращаюсь в меню.", reply_markup=main_keyboard)
+        return CHOOSING
+
     context.user_data["name"] = update.message.text
-    await update.message.reply_text("Теперь введи номер телефона:")
+    await update.message.reply_text("Теперь введи номер телефона:", reply_markup=back_keyboard)
     return ADD_PHONE
 
 async def add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("❌ Нет доступа.")
+    if update.message.text == "⬅️ Назад":
+        await update.message.reply_text("↩️ Возвращаюсь в меню.", reply_markup=main_keyboard)
         return CHOOSING
 
     name = context.user_data["name"]
@@ -95,8 +115,8 @@ async def add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSING
 
 async def order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("❌ Нет доступа.")
+    if update.message.text == "⬅️ Назад":
+        await update.message.reply_text("↩️ Возвращаюсь в меню.", reply_markup=main_keyboard)
         return CHOOSING
 
     phone = update.message.text
@@ -119,18 +139,28 @@ async def order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return CHOOSING
 
+async def delete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "⬅️ Назад":
+        await update.message.reply_text("↩️ Возвращаюсь в меню.", reply_markup=main_keyboard)
+        return CHOOSING
+
+    phone = update.message.text
+    cursor.execute("SELECT name FROM clients WHERE phone = ?", (phone,))
+    result = cursor.fetchone()
+
+    if result:
+        name = result[0]
+        cursor.execute("DELETE FROM clients WHERE phone = ?", (phone,))
+        conn.commit()
+        await update.message.reply_text(f"🗑️ Клиент {name} ({phone}) удалён.", reply_markup=main_keyboard)
+    else:
+        await update.message.reply_text("❌ Клиент не найден.", reply_markup=main_keyboard)
+
+    return CHOOSING
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Отменено. Возвращаюсь в главное меню.", reply_markup=main_keyboard)
     return CHOOSING
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("❌ Нет доступа.")
-        return
-
-    cursor.execute("DELETE FROM clients")
-    conn.commit()
-    await update.message.reply_text("🗑️ Все клиенты удалены! Список очищен.")
 
 # === Запуск ===
 
@@ -139,16 +169,17 @@ app = ApplicationBuilder().token("7898159101:AAGhICr4HQ-lZbhfq78eJcWYsXwU7Lzd80w
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
     states={
+        AWAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_password)],
         CHOOSING: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice)],
         ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_name)],
         ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_phone)],
         ORDER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_phone)],
+        DELETE_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_phone)],
     },
     fallbacks=[CommandHandler("cancel", cancel)],
 )
 
 app.add_handler(conv_handler)
-app.add_handler(CommandHandler("reset", reset))
 
 print("🚀 Бот запущен! Ждёт клиентов...")
 app.run_polling()
